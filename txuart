@@ -1,0 +1,278 @@
+`timescale 1ns / 1ps
+
+module uart_tx(
+	input 		    clk,
+	input 		    rst,
+	input[7:0] 		txdata,//输入的数据
+	input 		    txdata_verify,//主控程序告诉发送数据模块可以发送数据
+	output reg  	txdata_ready,//告诉主控程序该处已经准备好
+	output reg  	txdata_out//数据发送
+    );
+
+localparam		cycle = 5207;//在波特率为9600时，给50MHz时钟进行分频	 
+
+reg[15:0]			cycle_cnt;//对时钟进行分频操作，分频成9600，与串口读取发送的波特率一致
+reg[7:0]			txdata_save;//保存已经接收到的数据
+
+//发送的数据状态机内参数
+localparam				start_postion = 1;//数据位起始位
+localparam				onedata = 2;//数据位第1位
+localparam				twodata = 3;//数据为第2位
+localparam				threedata = 4;//数据位第3位
+localparam				fourdata = 5;//数据为第4位
+localparam				fivedata = 6;//数据位第5位
+localparam				sixdata = 7;//数据为第6位
+localparam				sevendata = 8;//数据位第7位
+localparam				eightdata = 9;//数据为第8位
+localparam				odd_postion = 10;//奇偶校验位
+localparam				stop_postion = 11;//停止位
+parameter 				paritymode = 1'b0;//奇偶校验位初始第一个异或对比值
+
+reg[3:0]					txdata_state;//发送数据状态机当前状态
+reg					odd_text;//奇偶校验位输出值
+reg[3:0]					bit_cnt;//计数每发送一个字符，进行计数8个bit
+
+//捕捉txdata_verify上升沿状态
+reg					tx_d0;
+reg					tx_d1;
+reg					posedge_verify;
+
+//此模块无论是默认数据还是读取的数据都有用
+//在状态机的启动时将读过来的数据写到该模块的位置寄存器中
+always@(posedge clk or negedge rst)
+begin
+	if(rst == 1'b0)
+		begin
+			txdata_save <= 8'd0;
+		end
+	else if(txdata_verify == 1'b1)//将发送过来的数据，在发送数据状态机开始时读进来一次
+		txdata_save <= txdata;
+end
+
+//捕捉txdata_verify上升沿，用于循环发送时，进行初始化计数器，进而影响9600波特率
+always@(posedge clk or negedge rst)
+begin
+	if(rst == 1'b0)
+		begin
+			tx_d0 <= 1'b0;
+			tx_d1 <= 1'b0;
+		end
+	else
+		begin
+			tx_d0 <= txdata_verify;
+			tx_d1 <= tx_d0;
+			posedge_verify <= ~tx_d1 && tx_d0;		
+		end
+end
+
+
+//数据是否发送完成，并做好接收下一个数据的准备,ready等于1时候，说明一个数据发送完成
+always@(posedge clk or negedge rst)
+begin
+	if(rst == 1'b0)
+		txdata_ready <= 1'b0;
+	else if((txdata_state == eightdata && cycle_cnt == cycle))
+		txdata_ready <= 1'b1;
+	else
+		txdata_ready <= 1'b0;
+end
+
+//计数器（时间的标准）
+always@(posedge clk or negedge rst)
+begin
+	if(rst == 1'b0)
+		cycle_cnt <= 16'd0;//d代表十进制//下面那句意思：计数器进行波特率计数，停止与启动执行完一个周期时将计数器置为0，为了计数准确
+	else if(txdata_state ==start_postion && posedge_verify == 1'b1)
+		cycle_cnt <= 16'd1;
+	else if(cycle_cnt == cycle)
+		cycle_cnt <= 16'd0;
+	else//如果上述的状态都不为true，则执行此处
+		cycle_cnt <= cycle_cnt + 16'd1;
+end
+
+//发送数据状态机，数据起始位（1位，低电平）、数据位（8）、奇偶校验位（1位）、结束位（1位高电平）
+always@(posedge clk or negedge rst)
+begin
+	if(rst == 1'b0)
+	begin
+		txdata_state <= start_postion;
+		txdata_out <= 1'b1;//初始化时，高电平输出
+		bit_cnt <= 3'd0;//进行发送数据位数计位(共8位数据位)
+		end
+	else
+		case(txdata_state)		
+		start_postion://起始位等于低电平有效，告诉串口开始接收信号
+		begin
+			if(txdata_verify == 1'b1)
+			begin
+				txdata_out <= 1'b0;
+				if(cycle_cnt == cycle)
+					begin
+						txdata_state <= onedata;
+						$display("start_postion");
+					end
+				else
+					txdata_state <= start_postion;
+			end
+	
+		end
+
+		onedata:
+		begin			
+			begin
+				txdata_out <= txdata_save[bit_cnt];//第一位数据的输出				
+			end
+			if(cycle_cnt == cycle)//如果到达此时刻，则第一个数据进行输出
+				begin
+				odd_text <= txdata_save[bit_cnt] ^ paritymode;//奇偶校验
+				txdata_state <= twodata;
+				bit_cnt <= bit_cnt + 3'd1;
+				end
+			else
+				txdata_state <= onedata;//发送第一个数据状态时，如果没有到达时间，则继续循环
+		end
+
+		twodata:
+		begin		 
+			begin
+				txdata_out <= txdata_save[bit_cnt];//第2位数据输出				
+			end
+			if(cycle_cnt == cycle)
+			begin
+				odd_text <= txdata_save[bit_cnt] ^ odd_text;//奇偶校验
+				txdata_state <= threedata;
+				bit_cnt <= bit_cnt + 3'd1;
+				end
+			else
+				txdata_state <= twodata;	
+		end
+
+		threedata:
+		begin		 
+			begin
+				txdata_out <= txdata_save[bit_cnt];//第3位数据输出				
+			end
+			if(cycle_cnt == cycle)
+			begin
+				odd_text <= txdata_save[bit_cnt] ^ odd_text;//奇偶校验
+				txdata_state <= fourdata;
+				bit_cnt <= bit_cnt + 3'd1;
+				end
+			else
+				txdata_state <= threedata;	
+		end
+		
+		fourdata:
+		begin		 
+			begin
+				txdata_out <= txdata_save[bit_cnt];//第4位数据输出				
+			end
+			if(cycle_cnt == cycle)
+			begin
+				odd_text <= txdata_save[bit_cnt] ^ odd_text;//奇偶校验
+				txdata_state <= fivedata;
+				bit_cnt <= bit_cnt + 3'd1;
+				end
+			else
+				txdata_state <= fourdata;	
+		end
+		
+		fivedata:
+		begin		 
+			begin
+				txdata_out <= txdata_save[bit_cnt];//第5位数据输出				
+			end
+			if(cycle_cnt == cycle)
+			begin
+				odd_text <= txdata_save[bit_cnt] ^ odd_text;//奇偶校验
+				txdata_state <= sixdata;
+				bit_cnt <= bit_cnt + 3'd1;
+				end
+			else
+				txdata_state <= fivedata;	
+		end	
+		
+		sixdata:
+		begin		 
+			begin
+				txdata_out <= txdata_save[bit_cnt];//第6位数据输出				
+			end
+			if(cycle_cnt == cycle)
+			begin
+				odd_text <= txdata_save[bit_cnt] ^ odd_text;//奇偶校验
+				txdata_state <= sevendata;
+				bit_cnt <= bit_cnt + 3'd1;
+				end
+			else
+				txdata_state <= sixdata;	
+		end
+		
+		sevendata:
+		begin		 
+			begin
+				txdata_out <= txdata_save[bit_cnt];//第7位数据输出				
+			end
+			if(cycle_cnt == cycle)
+			begin
+				odd_text <= txdata_save[bit_cnt] ^ odd_text;//奇偶校验
+				txdata_state <= eightdata;
+				bit_cnt <= bit_cnt + 3'd1;
+				end
+			else
+				txdata_state <= sevendata;	
+		end	
+		
+		eightdata:
+		begin		 
+			begin
+				txdata_out <= txdata_save[bit_cnt];//第8位数据输出				
+			end
+			if(cycle_cnt == cycle)
+			begin
+				odd_text <= txdata_save[bit_cnt] ^ odd_text;//奇偶校验
+				txdata_state <= odd_postion;
+				bit_cnt <= 3'd0;
+				
+				end
+			else
+				txdata_state <= eightdata;	
+		end
+		
+		
+		odd_postion:
+		begin
+			txdata_out <= odd_text;						
+			if(cycle_cnt == cycle)
+				begin
+				txdata_state <= stop_postion;
+				end
+			else
+				txdata_state <= odd_postion;	
+		end
+		
+		
+		stop_postion://停止位，高位停止
+		begin
+			begin
+				txdata_out <= 1'b1;
+			end
+			if(cycle_cnt == cycle)
+				begin
+				txdata_state <= start_postion;
+				end
+			else
+			begin
+				txdata_state <= stop_postion;	
+				txdata_out <= 1'b1;
+				end
+		end
+		
+		default:txdata_state <= start_postion;		
+		endcase
+end
+
+
+
+
+
+endmodule
