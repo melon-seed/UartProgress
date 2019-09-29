@@ -1,0 +1,322 @@
+`timescale 1ns / 1ps
+
+module uart_rx(
+	input		clk,
+	input		rst,
+	input		rxdata,//输入的数据,空闲时位高电平
+	input		rxdata_ready,//主控程序告诉接收数据模块准备接收数据（始终做接收数据的准备）
+	output  reg	rxdata_verify,//告诉主控已经接收好数据
+	output  reg[7:0]	rxdata_out//输出已经接收到的数据
+    );
+	
+reg[3:0]			rxdata_state;//发送数据位状态
+
+//接收数据状态机的状态分配
+localparam				chacknegedge = 0;
+localparam				start = 1;
+localparam				onedata = 2;
+localparam				twodata = 3;
+localparam				threedata = 4;
+localparam				fourdata = 5;
+localparam				fivedata = 6;
+localparam				sixdata = 7;
+localparam				sevendata = 8;
+localparam				eightdata = 9;
+localparam				odd_position = 10;
+localparam				end_position = 11;
+
+//9600波特率对应50MHz时钟进行分频计数操作
+localparam			cycle = 5207;//波特率9600所对应的时钟频率计数
+reg[15:0]				cycle_cnt;
+reg[7:0]				bit_cnt;
+
+parameter				paritymode = 1'b0;//奇偶校验位第一比较位
+reg				presult;//奇偶校验位输出；	 
+
+//起始位下降沿捕捉
+reg                  rx_d0;            //对rxdata延迟一个时钟
+reg                  rx_d1;            //对rx_d0延迟一个时钟
+reg                  rx_negedge;       //下降沿
+
+
+
+//数据接收完成，并且返回给主控程序rxdata_verify为1，说明程序接收一个字符ok
+always@(posedge clk or negedge rst)
+begin
+	if(rst == 1'b0)
+		rxdata_verify <= 1'b0;
+	else if(rxdata_state == end_position && cycle_cnt == 2603)//2603 = cycle/2-1,一个周期的中间位置
+		rxdata_verify <= 1'b1;
+	else
+		rxdata_verify <= 1'b0;
+end
+
+ //启动程序的捕捉起始位的下降沿
+always@(posedge clk or negedge rst)
+begin
+	if(rst == 1'b0)
+	begin
+		rx_d0 <= 1'b0;
+		rx_d1 <= 1'b0;
+	end	
+	else if(rxdata_state == chacknegedge)
+	begin
+		rx_d0 <= rxdata;
+		rx_d1 <= rx_d0;
+		rx_negedge <= rx_d1 && ~rx_d0;
+		end
+	else
+		rx_negedge <= 1'b0;
+	
+end
+
+//计数器，实现9600波特率的时钟计数
+always@(posedge clk or negedge rst)
+begin
+	if(rst == 1'b0)
+		cycle_cnt <= 1'b0;
+	else if(cycle_cnt == cycle || (rx_negedge == 1'b1))
+		cycle_cnt <= 1'b0;
+	else
+		cycle_cnt <= cycle_cnt + 16'd1;
+end
+
+ 
+//接收数据状态机，第1位高电平接收数据，2-9位为数据位，第10位为奇偶校验位，第11位为停止位，默认状态输入为1
+///接收完数据进行返回rxdata_verify置位1，然后发送模块进行把数据发送；此处的接收继续接收，直到停止位不变
+always@(posedge clk or negedge rst)
+begin
+	if(rst == 1'b0)
+	begin
+		rxdata_state <= chacknegedge;//初始化状态进入接收数据的下降沿捕捉状态+
+		rxdata_out <= 8'b0;
+		bit_cnt <= 8'd0;
+		end
+		
+	else if(rxdata_ready == 1'b1)
+	begin
+	
+		case(rxdata_state)
+		
+		chacknegedge://检测初始位的下降沿
+		begin
+			if(rx_negedge == 1'b1)
+				rxdata_state <= start;//下降沿捕捉到后，转移到下一个状态进行计数重置与等待一个周期操作	
+			else
+				rxdata_out <= 8'b1;
+		end
+			
+		//
+		start://接收起始位状态，将起始位的下降沿进行延迟
+		begin
+			if(cycle_cnt == cycle)
+				begin
+					bit_cnt <= 8'd0;
+					$display("onedata");
+					rxdata_state <= onedata;//延迟一个周期转移到开始接收bit的状态
+				end
+			else
+				rxdata_state <= start;
+		end
+		//
+		onedata://接收第1位状态
+		begin
+			if(cycle_cnt == 2603)//在一个周期的中间位置进行数据采样
+				begin
+					rxdata_out[bit_cnt] <= rxdata;
+					rxdata_state <= onedata;
+				end
+			else if(cycle_cnt == cycle)//延迟到一个周期转移到下一个状态
+			begin
+				bit_cnt <= bit_cnt + 1'd1;//接收的数据位加1
+				rxdata_state <= twodata;//转移到下一个状态
+				presult <= rxdata ^ paritymode;//奇偶校验位
+			end
+			else
+				begin
+					rxdata_state <= onedata;		
+					rxdata_out[bit_cnt] <= rxdata_out[bit_cnt];
+				end
+		end
+		
+	
+		//		
+		twodata://接收第2位状态
+		begin
+			if(cycle_cnt == 2603)
+			begin
+				rxdata_out[bit_cnt] <= rxdata;
+				rxdata_state <= twodata;
+				end
+			else if(cycle_cnt == cycle)
+			begin
+				bit_cnt <= bit_cnt + 1'd1;
+				rxdata_state <= threedata;
+				presult <= rxdata ^ presult;
+			end
+			else
+			begin
+				rxdata_state <= twodata;
+				rxdata_out[bit_cnt] <= rxdata_out[bit_cnt];
+					end
+		end
+		//
+		threedata://接收第3位状态
+		begin
+			if(cycle_cnt == 2603)
+			begin
+				rxdata_out[bit_cnt] <= rxdata;
+				rxdata_state <= threedata;
+				end
+			else if(cycle_cnt == cycle)
+			begin
+				bit_cnt <= bit_cnt + 1'd1;
+				rxdata_state <= fourdata;
+				presult <= rxdata ^ presult;
+			end
+			else
+				begin
+				rxdata_state <= threedata;
+				rxdata_out[bit_cnt] <= rxdata_out[bit_cnt];
+					end
+		end
+		//
+		fourdata://接收第4位状态
+		begin
+			if(cycle_cnt == 2603)
+			begin
+				rxdata_out[bit_cnt] <= rxdata;
+				rxdata_state <= fourdata;
+				end
+			else if(cycle_cnt == cycle)
+			begin
+				bit_cnt <= bit_cnt + 1'd1;
+				rxdata_state <= fivedata;
+				presult <= rxdata ^ presult;
+			end
+			else
+				begin
+				rxdata_state <= fourdata;	
+				rxdata_out[bit_cnt] <= rxdata_out[bit_cnt];
+					end
+		end
+		//		
+		fivedata://接收第5位状态
+		begin
+			if(cycle_cnt == 2603)
+			begin
+				rxdata_out[bit_cnt] <= rxdata;
+				rxdata_state <= fivedata;	
+				end
+			else if(cycle_cnt == cycle)
+			begin
+				bit_cnt <= bit_cnt + 1'd1;
+				rxdata_state <= sixdata;
+				presult <= rxdata ^ presult;
+			end
+			else
+				begin
+					rxdata_state <= fivedata;
+					rxdata_out[bit_cnt] <= rxdata_out[bit_cnt];
+					end
+		end
+		//	
+		sixdata://接收第6位状态
+		begin
+			if(cycle_cnt == 2603)
+			begin
+				rxdata_out[bit_cnt] <= rxdata;
+				rxdata_state <= sixdata;
+				end
+			else if(cycle_cnt == cycle)
+			begin
+				bit_cnt <= bit_cnt + 1'd1;
+				rxdata_state <= sevendata;
+				presult <= rxdata ^ presult;
+			end
+			else
+			begin
+				rxdata_state <= sixdata;	
+				rxdata_out[bit_cnt] <= rxdata_out[bit_cnt];
+				end
+		end
+		//			
+		sevendata://接收第7位状态
+		begin
+			if(cycle_cnt == 2603)
+			begin
+				rxdata_out[bit_cnt] <= rxdata;
+				rxdata_state <= sevendata;	
+				end
+			else if(cycle_cnt == cycle)
+			begin
+				bit_cnt <= bit_cnt + 1'd1;
+				rxdata_state <= eightdata;
+				presult <= rxdata ^ presult;
+				end
+			else
+			begin
+				rxdata_state <= sevendata;
+				rxdata_out[bit_cnt] <= rxdata_out[bit_cnt];
+				end
+		end
+		//
+		
+		eightdata://接收第8位数据
+		begin
+			if(cycle_cnt == 2603)
+			begin
+				rxdata_out[bit_cnt] <= rxdata;
+				rxdata_state <= eightdata;
+				end
+			else if(cycle_cnt == cycle)
+			begin
+				bit_cnt <= 1'b0;
+				rxdata_state <= odd_position;
+				presult <= rxdata ^ presult;
+			end
+			else
+			begin
+				rxdata_state <= eightdata;	
+				rxdata_out[bit_cnt] <= rxdata_out[bit_cnt];
+			end
+		end
+		//	
+		
+		
+		odd_position://接收奇偶校验位状态
+		begin
+		if(cycle_cnt == 2603)
+		begin
+			presult <= rxdata;//此处并没有校验奇偶校验位是否正确
+			$display("presult=ok");//说明奇偶校验位正确，进行输出该文字的操作
+			rxdata_state <= odd_position;
+			end
+		else if(cycle_cnt == cycle)
+			rxdata_state <= end_position;
+		else
+			rxdata_state <= odd_position;		
+		end
+		
+		
+		//接收结束位状态
+		end_position:
+		begin
+		if(cycle_cnt == 2603)//因为等待一个周期有可能错过下个数据的起始位
+			rxdata_state <= chacknegedge;
+		else
+			rxdata_state <= end_position;		
+		end
+		
+		//默认位状态机
+		default:rxdata_state <= chacknegedge;
+		endcase
+		
+	end
+	
+end
+	
+
+
+
+endmodule	 
