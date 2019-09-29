@@ -1,0 +1,9 @@
+NET "clk" LOC = V10 | TNM_NET = sys_clk_pin;
+TIMESPEC TS_sys_clk_pin = PERIOD sys_clk_pin 50000 kHz;
+##
+NET rst                LOC = N4 | IOSTANDARD = "LVCMOS33"; ## reset pushbutton
+##
+
+########USB Serial RS232 Pin define#####################
+NET rx                LOC = B2 | IOSTANDARD = "LVCMOS33";   	## Uart RXD:U4_TXD
+NET tx                LOC = C4 | IOSTANDARD = "LVCMOS33"; 	## Uart TXD:U4_RXD
