@@ -1,0 +1,152 @@
+`timescale 1ns / 1ps
+
+module uart_to_usb_text(
+	input 	clk,
+	input 	rst,
+	input 	rx,
+	output 	tx
+    );
+	 
+
+
+reg[7:0]		txdata;//主控程序待发送的数据
+reg		      txdata_verify;//主控程序告诉发送模块可以发送数据，用来控制输入或者输出的状态
+wire	     	txdata_ready;//告诉主控模块发送数据准备
+
+wire[7:0]		rxdata_out;//把接收模块接收的数据存储主控程序
+wire	    	rxdata_ready;//告诉接收数据模块数据准备去接收
+wire		    rxdata_verify;//告诉主控程序数据已经接收好,接下来可以给发送模块进行输出即可
+
+reg[3:0]		tx_cnt;//计数发送的第几个数据
+reg[7:0]		tx_str;//定义的给发送模块输入的默认数据
+reg[2:0]		ctrstate;//主控制程序的状态转换
+reg[31:0]		wait_cnt;//等待时间，用来延迟每次发送给发送模块完成后时，进行准备信号返回的延迟判断
+
+localparam	cycle = 5207;//波特率9600所对应的时钟计数--50*1000000/9600 =5208	
+
+//主控程序中的状态转换
+localparam	C_start=1;//起始状态
+localparam	C_send=2;//发送默认数据的状态
+localparam	C_wait=3;//接收数据与接收发送的数据，并且没有要接收的数据时，在每隔一秒发送默认发送数据操作
+
+//实时做好接收数据的准备（时刻准备着）
+assign		rxdata_ready = 1'b1;
+
+
+
+//主控程序，发送数据
+always@(posedge clk or negedge rst)
+begin
+	if(rst == 1'b0)
+	begin
+		tx_cnt <= 4'd0;
+		txdata_verify <= 1'b0;	
+		ctrstate <= C_start;
+	end	
+//计数传递哪一个数据
+//发送模块是否准备好，给发送模块确认发送数据的信号；		
+	else
+		case(ctrstate)
+		C_start://初始状态	
+			begin
+				ctrstate <= C_send;
+			end	
+					
+		C_send://发送默认数据状态
+		begin
+			txdata <= tx_str;//实时发送当前数据，只有在发送模块饭会准备时候，此时才能赋值下一个值给发送模块输入
+			if(txdata_ready == 1'b1 && txdata_verify == 1'b1 && tx_cnt < 4'd12)//判断发送模块是否发送完一个数据（返回txdata_ready为true）
+				begin
+					tx_cnt <= tx_cnt + 4'd1;
+					$display("SUMdigital");
+				end
+			else if(txdata_ready == 1'b1 && txdata_verify == 1'b1)//如果已经传输了默认的12个字符，就进行初始化操作
+				begin
+					txdata_verify <= 1'b0;
+					tx_cnt <= 4'd0;
+					ctrstate <= C_wait;
+				end
+			else if(~txdata_verify)//初始传输的状态时，如果txdata_verify为低电平，则置为高电平
+				begin
+					txdata_verify <= 1'b1;
+					$display("txdata_verify"); 
+				end	
+		end
+			
+		C_wait://等待状态，接收数据，并且把接收到的数据，收一个，发送一个	
+			if(rxdata_verify == 1'b1 && txdata_ready == 1'b1)
+				txdata_verify <= 1'b1;	
+			else if(rxdata_verify == 1'b1)
+			begin
+				txdata_verify <= 1'b1;
+				txdata <= rxdata_out;
+			end
+			else if(txdata_ready == 1'b1)
+				txdata_verify <= 1'b0;
+		
+			else if(rxdata_verify == 1'b0 && wait_cnt == 50000000)//在没有数据接收时，等待1s钟，继续发送默认数据
+				begin				
+					ctrstate <= C_start;
+					wait_cnt <= 32'd0;
+				end
+				
+			else														
+				begin
+					wait_cnt <= wait_cnt + 32'd1;//等待计数操作
+					ctrstate <= C_wait;
+				end
+				
+		default:ctrstate <= C_start;		
+		endcase
+
+end
+
+//主控程序默认发送的数据
+always@(*)
+begin
+	case(tx_cnt)
+		8'd0 :  tx_str <= "H";
+		8'd1 :  tx_str <= "E";
+		8'd2 :  tx_str <= "L";
+		8'd3 :  tx_str <= "L";
+		8'd4 :  tx_str <= "O";
+		8'd5 :  tx_str <= " ";
+		8'd6 :  tx_str <= "A";
+		8'd7 :  tx_str <= "L";
+		8'd8 :  tx_str <= "I";
+		8'd9 :  tx_str <= "N";
+		8'd10:  tx_str <= "X";
+		8'd11:  tx_str <= "\r";
+		8'd12:  tx_str <= "\n";
+		default:tx_str <= 8'd0;
+	endcase
+end
+
+uart_rx uart_rx(
+
+	.clk		(clk),
+	.rst		(rst),
+	.rxdata		(rx),//数据直接从串口输入
+	.rxdata_ready	(rxdata_ready),//告诉接收数据模块准备接收
+	.rxdata_verify	(rxdata_verify),//告诉主控程序数据已经接收完成
+	.rxdata_out	(rxdata_out)//把在接收模块接收的数据存储在主控模块
+);
+
+uart_tx uart_tx
+(
+	.clk		(clk),
+	.rst		(rst),
+	.txdata		(txdata),//主控程序待发送的数据
+	.txdata_verify	(txdata_verify),//主控程序发送串口数据有效
+	.txdata_ready	(txdata_ready),//告诉发送数据模块可以发送数据
+	.txdata_out	(tx)//数据直接从串口输出输出
+);
+
+
+
+
+endmodule
+
+
+
+
